@@ -3,18 +3,35 @@ import logging
 from configparser import ConfigParser
 from pathlib import Path
 
+from datetime import datetime
+import os
+
+
 # set sensible defaults for the configurable fields
+update_mode = os.getenv("UPDATE_MODE") == "true"
+
 DATA_PATH = 'Data'
 DATABASE_NAME = 'CVEfixes_sample.db'
+UPDATE_DATABASE_NAME = f"updates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
 USER = None
 TOKEN = None
 SAMPLE_LIMIT = 25
 NUM_WORKERS = 4
 LOGGING_LEVEL = logging.WARNING
 
+
+if update_mode:
+    GITHUB_CVE_PATH = f"{DATA_PATH}/nvd_updates"
+else:
+    GITHUB_CVE_PATH = f"{DATA_PATH}/nvdcve/nvdcve"
+
+
 # full path to the .db file
 DATABASE = Path(DATA_PATH) / DATABASE_NAME
 config_read = False
+
+
+    
 
 log_level_map = {'DEBUG': logging.DEBUG,
                  'INFO': logging.INFO,
@@ -50,7 +67,10 @@ def read_config() -> None:
         SAMPLE_LIMIT = config.getint('CVEfixes', 'sample_limit', fallback=SAMPLE_LIMIT)
         NUM_WORKERS = config.getint('CVEfixes', 'num_workers', fallback=NUM_WORKERS)
         Path(DATA_PATH).mkdir(parents=True, exist_ok=True)  # create the directory if not exists.
-        DATABASE = Path(DATA_PATH) / DATABASE_NAME
+        if update_mode:
+            DATABASE = Path(DATA_PATH) / UPDATE_DATABASE_NAME
+        else:
+            DATABASE = Path(DATA_PATH) / DATABASE_NAME
         LOGGING_LEVEL = log_level_map.get(config.get('CVEfixes', 'logging_level', fallback='WARNING'), logging.WARNING)
         config_read = True
     else:

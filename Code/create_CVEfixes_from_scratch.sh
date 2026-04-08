@@ -5,4 +5,5 @@
 #  - Interpreter: Python3.8 or newer
 #  - Python packages: $ pip install -r requirements.txt
 #------------------------------------------------------------------------------
+export UPDATE_MODE="false"
 python3 Code/collect_projects.py

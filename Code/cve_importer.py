@@ -5,116 +5,42 @@
 
 import datetime
 import json
-import os
-import re
-from io import BytesIO
 import pandas as pd
-import requests
 from pathlib import Path
-from zipfile import ZipFile
-from pandas import json_normalize
-
-from extract_cwe_record import add_cwe_class,  extract_cwe
+from extract_cwe_record import get_cwe_class,  extract_cwe
 import configuration as cf
 import database as db
 
+#added
+from collections import defaultdict
 # ---------------------------------------------------------------------------------------------------------------------
-
-urlhead = 'https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-'
-urltail = '.json.zip'
-initYear = 2002
+INIT_YEAR = 2002
 currentYear = datetime.datetime.now().year
 
-# Consider only current year CVE records when sample_limit>0 for the simplified example.
-if cf.SAMPLE_LIMIT > 0:
-    initYear = currentYear
+ORDERED_CVE_COLUMNS = [
+    'cve_id', 'published_date', 'last_modified_date', 'description', 'nodes', 'severity',
+    'obtain_all_privilege', 'obtain_user_privilege', 'obtain_other_privilege',
+    'user_interaction_required',
+    'cvss2_vector_string', 'cvss2_access_vector', 'cvss2_access_complexity', 'cvss2_authentication',
+    'cvss2_confidentiality_impact', 'cvss2_integrity_impact', 'cvss2_availability_impact',
+    'cvss2_base_score',
+    'cvss3_vector_string', 'cvss3_attack_vector', 'cvss3_attack_complexity',
+    'cvss3_privileges_required',
+    'cvss3_user_interaction', 'cvss3_scope', 'cvss3_confidentiality_impact',
+    'cvss3_integrity_impact',
+    'cvss3_availability_impact', 'cvss3_base_score', 'cvss3_base_severity',
+    'exploitability_score', 'impact_score', 'ac_insuf_info',
+    'reference_json', 'problemtype_json'
+]
 
-df = pd.DataFrame()
-
-ordered_cve_columns = ['cve_id', 'published_date', 'last_modified_date', 'description', 'nodes', 'severity',
-                       'obtain_all_privilege', 'obtain_user_privilege', 'obtain_other_privilege',
-                       'user_interaction_required',
-                       'cvss2_vector_string', 'cvss2_access_vector', 'cvss2_access_complexity', 'cvss2_authentication',
-                       'cvss2_confidentiality_impact', 'cvss2_integrity_impact', 'cvss2_availability_impact',
-                       'cvss2_base_score',
-                       'cvss3_vector_string', 'cvss3_attack_vector', 'cvss3_attack_complexity',
-                       'cvss3_privileges_required',
-                       'cvss3_user_interaction', 'cvss3_scope', 'cvss3_confidentiality_impact',
-                       'cvss3_integrity_impact',
-                       'cvss3_availability_impact', 'cvss3_base_score', 'cvss3_base_severity',
-                       'exploitability_score', 'impact_score', 'ac_insuf_info',
-                       'reference_json', 'problemtype_json']
-
-cwe_columns = ['cwe_id', 'cwe_name', 'description', 'extended_description', 'url', 'is_category']
-
-# ---------------------------------------------------------------------------------------------------------------------
-
-
-def rename_columns(name):
-    """
-    converts the other cases of string to snake_case, and further processing of column names.
-    """
-    name = name.split('.', 2)[-1].replace('.', '_')
-    name = re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
-    name = name.replace('cvss_v', 'cvss').replace('_data', '_json').replace('description_json', 'description')
-    return name
-
-
-def preprocess_jsons(df_in):
-    """
-    Flattening CVE_Items and removing the duplicates
-    :param df_in: merged dataframe of all years json files
-    """
-    cf.logger.info('Flattening CVE items and removing the duplicates...')
-    cve_items = json_normalize(df_in['CVE_Items'])
-    df_cve = pd.concat([df_in.reset_index(), cve_items], axis=1)
-
-    # Removing all CVE entries which have null values in reference-data at [cve.references.reference_data] column
-    df_cve = df_cve[df_cve['cve.references.reference_data'].str.len() != 0]
-
-    # Re-ordering and filtering some redundant and unnecessary columns
-    df_cve = df_cve.rename(columns={'cve.CVE_data_meta.ID': 'cve_id'})
-    df_cve = df_cve.drop(
-        labels=[
-            'index',
-            'CVE_Items',
-            'cve.data_type',
-            'cve.data_format',
-            'cve.data_version',
-            'CVE_data_type',
-            'CVE_data_format',
-            'CVE_data_version',
-            'CVE_data_numberOfCVEs',
-            'CVE_data_timestamp',
-            'cve.CVE_data_meta.ASSIGNER',
-            'configurations.CVE_data_version',
-            'impact.baseMetricV2.cvssV2.version',
-            'impact.baseMetricV2.exploitabilityScore',
-            'impact.baseMetricV2.impactScore',
-            'impact.baseMetricV3.cvssV3.version',
-        ], axis=1, errors='ignore')
-
-    # renaming the column names
-    df_cve.columns = [rename_columns(i) for i in df_cve.columns]
-
-    # Check and add columns if they are not present in the dataframe
-    for col in ordered_cve_columns:
-        if col not in df_cve.columns:
-            df_cve[col] = ""
-
-    # ordering the cve columns
-    df_cve = df_cve[ordered_cve_columns]
-
-    return df_cve
-
+CWE_COLUMNS = ['cwe_id', 'cwe_name', 'description', 'extended_description', 'url', 'is_category']
 
 def assign_cwes_to_cves(df_cve: pd.DataFrame):
-    df_cwes = extract_cwe()
+    df_cwes = pd.read_sql('select * from cwe', db.conn)
     # fetching CWE associations to CVE records
     cf.logger.info('Adding CWE category to CVE records...')
     df_cwes_class = df_cve[['cve_id', 'problemtype_json']].copy()
-    df_cwes_class['cwe_id'] = add_cwe_class(df_cwes_class['problemtype_json'].tolist())  # list of CWE-IDs' portion
-
+    df_cwes_class['cwe_id'] = get_cwe_class(df_cwes_class['problemtype_json'].tolist())  # list of CWE-IDs' portion
     # exploding the multiple CWEs list of a CVE into multiple rows.
     df_cwes_class = df_cwes_class.assign(
         cwe_id=df_cwes_class.cwe_id).explode('cwe_id').reset_index()[['cve_id', 'cwe_id']]
@@ -126,55 +52,206 @@ def assign_cwes_to_cves(df_cve: pd.DataFrame):
         cf.logger.debug('List of CWEs from CVEs that are not associated to cwe table are as follows:')
         cf.logger.debug(no_ref_cwes)
 
-    # Applying the assertion to cve-, cwe- and cwe_classification table.
-    assert df_cwes.cwe_id.is_unique, "Primary keys are not unique in cwe records!"
     assert df_cwes_class.set_index(['cve_id', 'cwe_id']).index.is_unique, \
         'Primary keys are not unique in cwe_classification records!'
-    assert set(list(df_cwes_class.cwe_id)).issubset(set(list(df_cwes.cwe_id))), \
-        'Not all foreign keys for the cwe_classification records are present in the cwe table!'
 
-    df_cwes = df_cwes[cwe_columns].reset_index()  # to maintain the order of the columns
-    df_cwes.to_sql(name="cwe", con=db.conn, if_exists='replace', index=False)
-    df_cwes_class.to_sql(name='cwe_classification', con=db.conn, if_exists='replace', index=False)
+    df_cwes_class.to_sql(name='cwe_classification', con=db.conn, if_exists='append', index=False)
+    db.conn.commit()
     cf.logger.info('Added cwe and cwe_classification tables')
 
+def get_english_description(descriptions):
+    if not isinstance(descriptions, list):
+        return pd.NA
+    for item in descriptions:
+        if isinstance(item, dict) and item.get("lang") == "en":
+            return item.get("value", pd.NA)
+    return pd.NA
+
+
+def extract_nodes(configurations): 
+    if not isinstance(configurations, list):
+        return pd.NA 
+    all_nodes = [] 
+    for cfg in configurations: 
+        if isinstance(cfg, dict): 
+            nodes = cfg.get("nodes") 
+            if isinstance(nodes, list): 
+                all_nodes.extend(nodes) 
+    return all_nodes if all_nodes else pd.NA
+
+
+def pick_preferred_metric(metric_list):
+    """
+    Prefer NVD source if present, otherwise return the first entry.
+    """
+    if not isinstance(metric_list, list) or not metric_list:
+        return None
+
+    for item in metric_list:
+        if isinstance(item, dict) and item.get("source") == "nvd@nist.gov":
+            return item
+
+    return metric_list[0]
+
+
+def extract_cve_row(data):
+    metrics = data.get("metrics", {}) if isinstance(data, dict) else {}
+
+    v2_item = pick_preferred_metric(metrics.get("cvssMetricV2", []))
+    v31_item = pick_preferred_metric(metrics.get("cvssMetricV31", []))
+
+    v2 = v2_item.get("cvssData", {}) if isinstance(v2_item, dict) else {}
+    v31 = v31_item.get("cvssData", {}) if isinstance(v31_item, dict) else {}
+
+    severity = (
+        v31.get("baseSeverity")
+        or (v31_item or {}).get("baseSeverity")
+        or v2.get("baseSeverity")
+        or (v2_item or {}).get("baseSeverity")
+        or pd.NA
+    )
+
+    exploitability_score = (
+        (v31_item or {}).get("exploitabilityScore")
+        if v31_item is not None
+        else (v2_item or {}).get("exploitabilityScore", pd.NA)
+    )
+
+    impact_score = (
+        (v31_item or {}).get("impactScore")
+        if v31_item is not None
+        else (v2_item or {}).get("impactScore", pd.NA)
+    )
+
+    ac_insuf_info = (v2_item or {}).get("acInsufInfo", pd.NA)
+    obtain_all_privilege = (v2_item or {}).get("obtainAllPrivilege", pd.NA)
+    obtain_user_privilege = (v2_item or {}).get("obtainUserPrivilege", pd.NA)
+    obtain_other_privilege = (v2_item or {}).get("obtainOtherPrivilege", pd.NA)
+    user_interaction_required = (v2_item or {}).get("userInteractionRequired", pd.NA)
+
+    if pd.isna(user_interaction_required):
+        v31_ui = v31.get("userInteraction")
+        if v31_ui is not None:
+            user_interaction_required = (v31_ui != "NONE")
+
+    row = {
+        'cve_id': data.get("id", pd.NA),
+        'published_date': data.get("published", pd.NA),
+        'last_modified_date': data.get("lastModified", pd.NA),
+        'description': get_english_description(data.get("descriptions")),
+        'nodes': extract_nodes(data.get("configurations")),
+        'severity': severity,
+
+        'obtain_all_privilege': obtain_all_privilege,
+        'obtain_user_privilege': obtain_user_privilege,
+        'obtain_other_privilege': obtain_other_privilege,
+        'user_interaction_required': user_interaction_required,
+
+        'cvss2_vector_string': v2.get("vectorString", pd.NA),
+        'cvss2_access_vector': v2.get("accessVector", pd.NA),
+        'cvss2_access_complexity': v2.get("accessComplexity", pd.NA),
+        'cvss2_authentication': v2.get("authentication", pd.NA),
+        'cvss2_confidentiality_impact': v2.get("confidentialityImpact", pd.NA),
+        'cvss2_integrity_impact': v2.get("integrityImpact", pd.NA),
+        'cvss2_availability_impact': v2.get("availabilityImpact", pd.NA),
+        'cvss2_base_score': v2.get("baseScore", pd.NA),
+
+        'cvss3_vector_string': v31.get("vectorString", pd.NA),
+        'cvss3_attack_vector': v31.get("attackVector", pd.NA),
+        'cvss3_attack_complexity': v31.get("attackComplexity", pd.NA),
+        'cvss3_privileges_required': v31.get("privilegesRequired", pd.NA),
+        'cvss3_user_interaction': v31.get("userInteraction", pd.NA),
+        'cvss3_scope': v31.get("scope", pd.NA),
+        'cvss3_confidentiality_impact': v31.get("confidentialityImpact", pd.NA),
+        'cvss3_integrity_impact': v31.get("integrityImpact", pd.NA),
+        'cvss3_availability_impact': v31.get("availabilityImpact", pd.NA),
+        'cvss3_base_score': v31.get("baseScore", pd.NA),
+        'cvss3_base_severity': v31.get("baseSeverity", pd.NA),
+
+        'exploitability_score': exploitability_score,
+        'impact_score': impact_score,
+        'ac_insuf_info': ac_insuf_info,
+
+        'reference_json': data.get("references", pd.NA),
+        'problemtype_json': data.get("weaknesses", pd.NA),
+    }
+    # print(data.get("id", pd.NA))
+    # print(data.get("vulnStatus", pd.NA))
+    # print(data.get("configurations", pd.NA)[0].get("nodes",pd.NA))
+    # print()
+    return row
 
 def import_cves():
     """
     gathering CVE records by processing JSON files.
     """
     cf.logger.info('-' * 70)
-    if db.table_exists('cve'):
-        cf.logger.warning('The cve table already exists, loading and continuing extraction...')
-        # df_cve = pd.read_sql(sql="SELECT * FROM cve", con=db.conn)
-    else:
-        for year in range(initYear, currentYear + 1):
-            extract_target = 'nvdcve-1.1-' + str(year) + '.json'
-            zip_file_url = urlhead + str(year) + urltail
 
-            # Check if the directory already has the json file or not ?
-            if os.path.isfile(Path(cf.DATA_PATH) / 'json' / extract_target):
-                cf.logger.warning(f'Reusing the {year} CVE json file that was downloaded earlier...')
-                json_file = Path(cf.DATA_PATH) / 'json' / extract_target
-            else:
-                # url_to_open = urlopen(zip_file_url, timeout=10)
-                r = requests.get(zip_file_url)
-                z = ZipFile(BytesIO(r.content))  # BytesIO keeps the file in memory
-                json_file = z.extract(extract_target, Path(cf.DATA_PATH) / 'json')
+    for tbl in ['cve', 'cwe', 'cwe_classification','fixes', 'cwe_classification', 'commits','file_change','method_change', 'repository']:
+        if db.table_exists(tbl):
+            db.execute_sql_cmd(f'DROP TABLE {tbl};')
 
-            with open(json_file) as f:
-                yearly_data = json.load(f)
-                if year == initYear:  # initialize the df_methods by the first year data
-                    df_cve = pd.DataFrame(yearly_data)
-                else:
-                    df_cve = df_cve.append(pd.DataFrame(yearly_data))
-                cf.logger.info(f'The CVE json for {year} has been merged')
+    df_cwes = extract_cwe()
+    # Applying the assertion to cve-, cwe- and cwe_classification table.
+    assert df_cwes.cwe_id.is_unique, "Primary keys are not unique in cwe records!"
 
-        df_cve = preprocess_jsons(df_cve)
-        df_cve = df_cve.applymap(str)
-        assert df_cve.cve_id.is_unique, 'Primary keys are not unique in cve records!'
-        df_cve.to_sql(name="cve", con=db.conn, if_exists="replace", index=False)
-        cf.logger.info('All CVEs have been merged into the cve table')
-        cf.logger.info('-' * 70)
+    df_cwes = df_cwes[CWE_COLUMNS].reset_index()  # to maintain the order of the columns
+    df_cwes.to_sql(name="cwe", con=db.conn, if_exists='replace', index=False)
+    db.conn.commit()
 
-        assign_cwes_to_cves(df_cve=df_cve)
+    github_cves_path =cf.GITHUB_CVE_PATH
+
+    root = Path(github_cves_path)
+    files_by_year = defaultdict(list)
+
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        
+        parts = path.stem.split("-")
+        if len(parts) > 1 and parts[1].isdigit():
+            year = int(parts[1])
+            files_by_year[year].append(path)
+
+    #kept yearly logic
+    for year in range(INIT_YEAR, currentYear + 1):
+        rows = []
+        for path in files_by_year.get(year, []):
+            with path.open("r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+                #add only analyzed ones for quality
+                #REMINDER de schimbat daca dataset-ul e prea mic
+                if data.get("vulnStatus", pd.NA) == "Analyzed" and len(data.get("references")) > 0:
+                    rows.append(extract_cve_row(data))
+        cf.logger.info(f'Found {len(rows)} analyzed CVEs for {year} year')
+        df = pd.DataFrame(rows)
+
+        for col in ORDERED_CVE_COLUMNS:
+            if col not in df.columns:
+                df[col] = pd.NA
+        
+        df_cve = df[ORDERED_CVE_COLUMNS]
+
+        for col in ["nodes", "reference_json", "problemtype_json"]:
+            if col in df_cve.columns:
+                df_cve[col] = df_cve[col].apply(
+                    lambda x: json.dumps(x)
+                    if isinstance(x, (dict, list))
+                    else None
+                )
+        
+        df_cve = df_cve.where(df_cve.notna(), None)
+        df_cve = df_cve.replace({
+            "None": None,
+            "<NA>": None,
+            "nan": None,
+            "NaN": None
+        })
+
+        assert df_cve['cve_id'].is_unique, 'Primary keys are not unique in cve records!'
+
+        df_cve.to_sql(name="cve", con=db.conn, if_exists="append", index=False)
+        db.conn.commit()
+
+    df_all_cves = pd.read_sql('select cve_id, problemtype_json from cve', db.conn)
+    assign_cwes_to_cves(df_cve=df_all_cves)

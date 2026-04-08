@@ -1,3 +1,13 @@
 .CVEfixes.ini
 CVEfixes*.db
 CVEfixes*.sql.gz
+
+venv/*
+
+Examples/query_CVEfixes.ipynb
+
+Data/*
+Examples/*
+
+__pycache__/
+*.pyc

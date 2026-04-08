@@ -21,20 +21,19 @@ def extract_cwe():
     """
 
     cwe_doc = sorted(Path(cf.DATA_PATH).glob('cwec_*.xml'))
-    if len(cwe_doc) > 0:
-        cf.logger.info('Reusing the CWE XML file that is already in the directory')
-        xtree = et.parse(cwe_doc[-1])
-    else:
-        cwe_url = 'https://cwe.mitre.org/data/xml/cwec_latest.xml.zip'
-        cwe_zip = ZipFile(BytesIO(urlopen(cwe_url).read()))
-        cwe_doc = sorted(fnmatch.filter(cwe_zip.namelist(),'cwec_*.xml'))  # assumes all files at top level
-        assert len(cwe_doc) > 0, \
-            'Cannot find a CWE XML file in https://cwe.mitre.org/data/xml/cwec_latest.xml.zip'
-        cf.logger.info(f'Extracting CWE data from {cwe_doc[-1]}')
-        cwe_file = cwe_zip.extract(cwe_doc[-1], cf.DATA_PATH)
-        xtree = et.parse(cwe_file)
-        time.sleep(2)
 
+    cwe_url = 'https://cwe.mitre.org/data/xml/cwec_latest.xml.zip'
+    cwe_zip = ZipFile(BytesIO(urlopen(cwe_url).read()))
+    cwe_doc = sorted(fnmatch.filter(cwe_zip.namelist(), 'cwec_*.xml'))  # assumes all files at top level
+    assert len(cwe_doc) > 0, \
+        'Cannot find a CWE XML file in https://cwe.mitre.org/data/xml/cwec_latest.xml.zip'
+    cf.logger.info(f'Extracting CWE data from {cwe_doc[-1]}')
+    cwe_file = cwe_zip.extract(cwe_doc[-1], cf.DATA_PATH)
+    xtree = et.parse(cwe_file)
+    time.sleep(2)
+    
+
+    time.sleep(2)
     xroot = xtree.getroot()
     cat_flag = 0
     rows = []
@@ -77,34 +76,39 @@ def extract_cwe():
         'is_category': False
     })
 
+    rows.append({
+        'cwe_id': 'NVD-CWE-1026',
+        'cwe_name': 'CWE VIEW: Weaknesses in OWASP Top Ten (2017)',
+        'description': 'NVD is only using a subset of CWE for mapping instead of the entire CWE, and the weakness type is not covered by that subset.',
+        'extended_description': 'Insufficient Information',
+        'url': 'https://cwe.mitre.org/data/definitions/1026.html',
+        'is_category': False
+    })
+
     df_cwe = pd.DataFrame.from_dict(rows)
     df_cwe = df_cwe.drop_duplicates(subset=['cwe_id']).reset_index(drop=True)
     return df_cwe
 
 
-def parse_cwes(str1):
-    """
-    Converts string to list.
-    """
-    lst = ast.literal_eval(str1)
-    lst = [x.strip() for x in lst]
-    return lst
-
-
-def add_cwe_class(problem_col):
+def get_cwe_class(cve_cwe_info):
     """
     returns CWEs of the CVE.
     """
     cwe_classes = []
-    for p in problem_col:
-        des = str(p).replace("'", '"')
-        des = json.loads(des)
-        for cwes in json_normalize(des)["description"]:  # for every cwe of each cve.
-            if len(cwes) != 0:
-                cwe_classes.append([cwe_id for cwe_id in json_normalize(cwes)["value"]])
-            else:
-                cwe_classes.append(["unknown"])
-
-    assert len(problem_col) == len(cwe_classes), \
+    for entry in cve_cwe_info:
+        f_entry = str(entry).replace("'", '"')
+        f_entry = json.loads(f_entry)
+        cwe_ids = []
+        for cwe in f_entry:
+            descriptions = cwe.get("description")
+            for des in descriptions:
+                if des.get("lang") == "en":
+                    cwe_ids.append(des.get("value"))
+                break
+        if len(cwe_ids) != 0:
+            cwe_classes.append(cwe_ids)
+        else:
+            cwe_classes.append(["unknown"])
+    assert len(cve_cwe_info) == len(cwe_classes), \
         "Sizes are not equal - Problem occurred while fetching the cwe classification records!"
     return cwe_classes
