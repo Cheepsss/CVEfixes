@@ -30,8 +30,6 @@ def extract_cwe():
     cf.logger.info(f'Extracting CWE data from {cwe_doc[-1]}')
     cwe_file = cwe_zip.extract(cwe_doc[-1], cf.DATA_PATH)
     xtree = et.parse(cwe_file)
-    time.sleep(2)
-    
 
     time.sleep(2)
     xroot = xtree.getroot()
