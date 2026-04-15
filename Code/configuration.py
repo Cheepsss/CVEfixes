@@ -15,7 +15,7 @@ DATABASE_NAME = 'CVEfixes_sample.db'
 UPDATE_DATABASE_NAME = f"updates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
 USER = None
 TOKEN = None
-SAMPLE_LIMIT = 25
+SAMPLE_LIMIT = 0
 NUM_WORKERS = 4
 LOGGING_LEVEL = logging.WARNING
 

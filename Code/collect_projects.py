@@ -25,28 +25,47 @@ repo_columns = [
 ]
 
 
+import time
+import requests
+
 def find_unavailable_urls(urls):
-    """
-    returns the unavailable urls (repositories that are removed or made private)
-    """
-    sleeptime = 0
     unavailable_urls = []
     for url in urls:
-        response = requests.head(url)
+        max_retries = 3
+        retry_count = 0
 
-        # wait while sending too many requests (increasing timeout on every iteration)
-        while response.status_code == 429:
-            sleeptime += 10
-            time.sleep(sleeptime)
-            response = requests.head(url)
-        sleeptime = 0
+        while True:
+            try:
+                response = requests.get(
+                    url,
+                    timeout=3,
+                    allow_redirects=True,
+                    stream=True
+                )
 
-        # GitLab responds to unavailable repositories by redirecting to their login page.
-        # This code is a bit brittle with a hardcoded URL but we want to allow for projects
-        # that are redirected due to renaming or transferal to new owners...
-        if (response.status_code >= 400) or \
-                (response.is_redirect and
-                 response.headers['location'] == 'https://gitlab.com/users/sign_in'):
+                if response.status_code != 429:
+                    break
+
+                if retry_count >= max_retries:
+                    break
+
+                sleep_time = min(60, 2 ** retry_count)
+                time.sleep(sleep_time)
+                retry_count += 1
+
+            except requests.RequestException as e:
+                cf.logger.debug(f"Request failed for {url}: {e}")
+                unavailable_urls.append(url)
+                response = None
+                break
+
+        if response is None:
+            continue
+
+        if (response.status_code >= 400) or (
+            response.is_redirect and
+            response.headers.get('location') == 'https://gitlab.com/users/sign_in'
+        ):
             cf.logger.debug(f'Reference {url} is not available with code: {response.status_code}')
             unavailable_urls.append(url)
         else:
